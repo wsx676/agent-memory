@@ -1,0 +1,62 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Dependencies
+node_modules
+
+# Build output
+dist
+dist-ssr
+*.local
+
+# Python
+.venv
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+coverage/
+htmlcov/
+
+# Data files (generated, not tracked)
+data/*.json
+data/*.csv
+
+# Environment & secrets
+.env
+.env.*
+
+# Debug / temp files
+.dbg/
+.trae/
+.tmp_*
+*.tmp
+.git_*_output.txt
+debug-*.md
+
+# Root-level debug JSON outputs
+/*.single.json
+/*.fitz.json
+/*.fitz_text.json
+/*.pdfplumber.json
+/*.preprocess_fitz.json
+
+# Validation / preprocessing outputs (generated)
+validation_outputs/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
