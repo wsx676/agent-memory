@@ -18,10 +18,10 @@ from api.models import (
     TaskResultResponse,
     UploadDocumentRequest,
 )
-from api.services.formatter import build_evidence_items, choose_answer
+from api.services.formatter import build_evidence_items, choose_answer, needs_self_check
 from api.services.memory import build_memory_ledger
 from api.services.preprocess import create_document_record, preprocess_document
-from api.services.qwen_client import answer_with_qwen, get_qwen_config_status
+from api.services.qwen_client import QwenAnswer, answer_with_qwen, get_qwen_config_status, verify_with_qwen
 from api.services.retrieval_loop import run_retrieval_loop
 from api.state import ANSWER_FILE, CHUNKS_FILE, DOCUMENTS_FILE, EVIDENCE_FILE, RESULTS_FILE, TASKS_FILE, read_json, write_json
 
@@ -226,6 +226,8 @@ def run_task(payload: RunQuestionTaskRequest) -> dict:
     qwen_result = None
     qwen_error = None
     qwen_attempted = False
+    self_checked = False
+    verify_error = None
     if qwen_status.enabled:
         qwen_attempted = True
         try:
@@ -240,6 +242,32 @@ def run_task(payload: RunQuestionTaskRequest) -> dict:
             qwen_error = f"{type(exc).__name__}: {exc}"
     if qwen_result is not None:
         answer = qwen_result.answer
+        # 低置信题（多选 / 无 support 单选判断）触发证据溯源自检，纠正漏选/误选。
+        # 与 eval_group_a_qwen.py 的离线自检逻辑保持一致，避免主链与评测脚本行为割裂。
+        if needs_self_check(payload.answer_format, reasoning_results, answer):
+            self_checked = True
+            try:
+                verified = verify_with_qwen(
+                    question=payload.question,
+                    options=payload.options,
+                    answer_format=payload.answer_format,
+                    evidence=candidate_chunks,
+                    reasoning_hints=reasoning_results,
+                    first_answer=answer,
+                )
+                if verified is not None:
+                    answer = verified.answer
+                    # 自检消耗的 token 累加进本题总量，保证 token 统计口径完整。
+                    qwen_result = QwenAnswer(
+                        answer=answer,
+                        reasoning=verified.reasoning,
+                        prompt_tokens=qwen_result.prompt_tokens + verified.prompt_tokens,
+                        completion_tokens=qwen_result.completion_tokens + verified.completion_tokens,
+                        total_tokens=qwen_result.total_tokens + verified.total_tokens,
+                        model=verified.model,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                verify_error = f"{type(exc).__name__}: {exc}"
     evidence_items = build_evidence_items(reasoning_results, evidence_map)
     ledger = build_memory_ledger(payload.qid, payload.question, evidence_map, reasoning_results)
     if qwen_result is not None:
@@ -311,6 +339,8 @@ def run_task(payload: RunQuestionTaskRequest) -> dict:
             f"llm_fallback={str(qwen_result is None).lower()}",
             f"llm_fallback_reason={llm_trace.fallback_reason}",
             f"llm_error={qwen_error or 'none'}",
+            f"self_checked={str(self_checked).lower()}",
+            f"verify_error={verify_error or 'none'}",
             *list(retrieval_result.get("loop_logs", [])),
         ],
     )

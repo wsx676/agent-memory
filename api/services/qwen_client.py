@@ -56,6 +56,13 @@ def _get_setting(name: str) -> str | None:
     return _load_env_file().get(name)
 
 
+def _get_bool_setting(name: str, default: bool) -> bool:
+    raw = _get_setting(name)
+    if raw is None or raw == "":
+        return default
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
 def qwen_is_configured() -> bool:
     return get_qwen_config_status().enabled
 
@@ -130,17 +137,32 @@ def _build_single_messages(
     ]
 
 
+def _format_prejudgment(reasoning_hints: list[ReasoningItem]) -> str:
+    """将本地逐选项预判格式化为参考锚点（非强制），帮助 Qwen 减少漏选/误选。"""
+    if not reasoning_hints:
+        return ""
+    lines = [f"- 选项{item.option}: 本地初判={item.verdict}" for item in reasoning_hints]
+    return (
+        "\n【本地初步判定（仅供参考，须以证据为准，可推翻）】\n"
+        + "\n".join(lines)
+        + "\n"
+    )
+
+
 def _build_multi_messages(
     question: str,
     options: list[str],
     evidence: list[StructuredChunk],
+    reasoning_hints: list[ReasoningItem] | None = None,
 ) -> list[dict[str, str]]:
     """Multi-choice prompt: per-option independent judgment."""
     option_lines = [f"{name}. {option}" for name, option in zip(OPTION_NAMES, options)]
+    prejudgment = _format_prejudgment(reasoning_hints or [])
     user_prompt = (
         f"问题：{question}\n"
         f"选项：\n{chr(10).join(option_lines)}\n\n"
-        f"证据：\n{_format_evidence(evidence)}\n\n"
+        f"证据：\n{_format_evidence(evidence)}\n"
+        f"{prejudgment}\n"
         "请逐个选项独立判断：有直接证据支持则选，"
         "证据明确排除（含'不得''除外'等否定表述）则不选，"
         "无法从证据中确认的不选。"
@@ -157,13 +179,16 @@ def _build_judge_messages(
     question: str,
     options: list[str],
     evidence: list[StructuredChunk],
+    reasoning_hints: list[ReasoningItem] | None = None,
 ) -> list[dict[str, str]]:
     """Judge/true-false prompt: negation and exception detection."""
     option_lines = [f"{name}. {option}" for name, option in zip(OPTION_NAMES, options)]
+    prejudgment = _format_prejudgment(reasoning_hints or [])
     user_prompt = (
         f"问题：{question}\n"
         f"选项：\n{chr(10).join(option_lines)}\n\n"
-        f"证据：\n{_format_evidence(evidence)}\n\n"
+        f"证据：\n{_format_evidence(evidence)}\n"
+        f"{prejudgment}\n"
         "请特别注意否定表述（不得、不予、除外、不包括）"
         "和例外条款（但...、除...外）可能改变判断方向。"
         "答案必须是单个选项字母。\n"
@@ -182,11 +207,15 @@ def _build_messages(
     evidence: list[StructuredChunk],
     reasoning_hints: list[ReasoningItem],
 ) -> list[dict[str, str]]:
-    """Dispatch to format-specific prompt builder. reasoning_hints ignored."""
+    """Dispatch to format-specific prompt builder.
+
+    多选与判断题注入本地逐选项预判作为参考锚点（最受漏选/否定误判影响）；
+    单选题保持精简，不注入以控制 token 与避免本地误判带偏。
+    """
     if answer_format == "multi":
-        return _build_multi_messages(question, options, evidence)
+        return _build_multi_messages(question, options, evidence, reasoning_hints)
     if answer_format == "judge":
-        return _build_judge_messages(question, options, evidence)
+        return _build_judge_messages(question, options, evidence, reasoning_hints)
     return _build_single_messages(question, options, evidence)
 
 
@@ -251,21 +280,27 @@ def _call_qwen_api(
     Returns None when answer cannot be extracted (caller should retry or fallback).
     Includes fallback answer extraction for non-JSON model outputs.
     """
+    # enable_thinking 默认关闭：P2v3 验证过 Qwen3 思考模式会产生 500+ 内部 token、
+    # 非确定性输出与偶发空/截断响应，关闭后 100 题全部首次成功、延迟降 71%。
+    # 保留 QWEN_ENABLE_THINKING 开关以便 A/B 对比，但默认回到已验证的最优配置。
+    enable_thinking = _get_bool_setting("QWEN_ENABLE_THINKING", default=False)
+    request_body: dict[str, object] = {
+        "model": model_name,
+        "temperature": 0,
+        "max_tokens": 4096 if answer_format == "multi" else 3072,
+        "response_format": {"type": "json_object"},
+        "messages": messages,
+        "enable_thinking": enable_thinking,
+    }
+    if enable_thinking:
+        request_body["thinking_budget"] = 2560
     response = httpx.post(
         f"{base_url}/chat/completions",
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         },
-        json={
-            "model": model_name,
-            "temperature": 0,
-            "max_tokens": 4096 if answer_format == "multi" else 3072,
-            "response_format": {"type": "json_object"},
-            "messages": messages,
-            "enable_thinking": True,
-            "thinking_budget": 2560,
-        },
+        json=request_body,
         timeout=90.0,
     )
     response.raise_for_status()
