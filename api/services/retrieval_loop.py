@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from api.models import ReasoningItem, RunQuestionTaskRequest, StructuredChunk
 from api.services.planner import activate_rewrite, build_plan, next_rewrite_from_feedback
 from api.services.reasoner import reason_options
@@ -129,6 +131,29 @@ def _build_gap_driven_plan(
     return plan
 
 
+# reasoning 文本里嵌入的置信度标记，形如"（置信度85%）"
+_CONFIDENCE_PATTERN = re.compile(r"置信度\s*(\d+(?:\.\d+)?)\s*%")
+
+# 允许翻转已确认结论所需的最小置信度增量：新结论必须显著更强才覆盖旧结论，
+# 防止低置信噪声引起轮次间震荡。
+_FLIP_CONFIDENCE_MARGIN = 0.15
+
+
+def _extract_confidence(item: ReasoningItem) -> float:
+    """从 reasoning 文本解析置信度（0~1）。
+
+    reasoner 目前只把置信度写进 reasoning 文本（如"（置信度85%）"），
+    未落到 ReasoningItem 字段，因此这里用正则解析。解析失败返回 0.0。
+    """
+    match = _CONFIDENCE_PATTERN.search(item.reasoning or "")
+    if not match:
+        return 0.0
+    try:
+        return float(match.group(1)) / 100.0
+    except ValueError:
+        return 0.0
+
+
 def _merge_reasoning_results(
     confirmed: dict[str, ReasoningItem],
     new_results: list[ReasoningItem],
@@ -136,18 +161,30 @@ def _merge_reasoning_results(
 ) -> list[ReasoningItem]:
     """合并已确认的推理结果和新一轮的推理结果。
 
-    已确认为 support/refute 的选项保留原结果（不重算）；
-    只有原先是 insufficient/unknown 的选项才接受新结果。
-    保证了状态机单调收敛——confirmed 不会被后续轮次覆盖。
+    收敛策略（在单调收敛基础上允许有条件纠错）：
+    - 原先 insufficient/unknown 的选项：直接接受新结果。
+    - 已确认为 support/refute 的选项：默认保留旧结论；但当新一轮同样给出
+      确定性结论（support/refute）且置信度显著更高（增量 >= _FLIP_CONFIDENCE_MARGIN）
+      时，用新结论覆盖——避免首轮因证据不全的误判被永久固化，同时用 margin
+      阈值抑制低置信噪声导致的来回翻转。
     """
     merged: dict[str, ReasoningItem] = {}
     # 先放入已确认的
     for name, item in confirmed.items():
         merged[name] = item
-    # 新结果只覆盖未确认的
+    # 新结果按规则覆盖
     for result in new_results:
-        if result.option not in merged or merged[result.option].verdict not in ("support", "refute"):
+        existing = merged.get(result.option)
+        if existing is None or existing.verdict not in ("support", "refute"):
+            # 未确认项：直接接受新结果
             merged[result.option] = result
+            continue
+        # 已确认项：仅当新结论也是确定性且置信度显著更高时才翻转
+        if result.verdict in ("support", "refute"):
+            new_conf = _extract_confidence(result)
+            old_conf = _extract_confidence(existing)
+            if new_conf - old_conf >= _FLIP_CONFIDENCE_MARGIN:
+                merged[result.option] = result
     # 按选项字母排序输出
     return [merged[name] for name in OPTION_NAMES[: len(options)] if name in merged]
 

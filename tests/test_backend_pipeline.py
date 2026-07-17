@@ -93,7 +93,10 @@ def _build_minimal_pdf(pages: list[str]) -> bytes:
 def test_health_endpoint() -> None:
     response = client.get("/api/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    body = response.json()
+    assert body["status"] == "ok"
+    # /api/health 现返回 Qwen 状态字段，仅校验核心字段以避免陈旧全等断言
+    assert "qwenEnabled" in body
 
 
 def test_document_upload_and_preprocess(tmp_path: Path) -> None:
