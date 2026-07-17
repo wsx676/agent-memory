@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from api.models import RunQuestionTaskRequest, StructuredChunk
+from api.models import ReasoningItem, RunQuestionTaskRequest, StructuredChunk
 from api.services.planner import activate_rewrite, build_plan, next_rewrite_from_feedback
 from api.services.reasoner import reason_options
 from api.services.retrieval_evaluator import evaluate_retrieval_quality
 from api.services.retriever import rank_chunks, rank_documents
+
+OPTION_NAMES = ("A", "B", "C", "D", "E", "F")
 
 
 def _resolve_doc_ids(
@@ -28,6 +30,128 @@ def _resolve_doc_ids(
     return ranked_docs
 
 
+def _init_ledger(options: list[str]) -> dict[str, object]:
+    """初始化跨轮结构化账本。
+
+    账本跟踪每选项的收敛状态，驱动第二轮起的定向补检索：
+    - option_status: 每选项的当前 verdict（unknown→support/refute/insufficient）
+    - confirmed_chunks: 已确认选项的证据，跨轮累积不丢失
+    - gaps: insufficient 选项的文本，用于生成定向 query
+    """
+    return {
+        "option_status": {name: "unknown" for name in OPTION_NAMES[: len(options)]},
+        "confirmed_results": {},  # option_name → ReasoningItem（已确认的）
+        "confirmed_chunks": [],   # 已确认选项的 evidence chunks（跨轮累积）
+        "all_candidate_chunks": [],  # 所有轮次的候选 chunks（去重累积）
+        "gaps": [],  # insufficient 选项的文本列表
+    }
+
+
+def _update_ledger(
+    ledger: dict[str, object],
+    reasoning_results: list[ReasoningItem],
+    evidence_map: dict[str, list[StructuredChunk]],
+    candidate_chunks: list[StructuredChunk],
+) -> None:
+    """每轮结束后更新账本：固化已确认选项，提取缺口。"""
+    option_status = dict(ledger["option_status"])
+    confirmed_results = dict(ledger["confirmed_results"])
+    gaps: list[str] = []
+
+    for result in reasoning_results:
+        option_status[result.option] = result.verdict
+        if result.verdict in ("support", "refute"):
+            # 固化已确认选项的推理结果和证据
+            confirmed_results[result.option] = result
+        elif result.verdict == "insufficient":
+            # 记录缺口——insufficient 选项的文本将驱动下一轮 query
+            gaps.append(result.option)
+
+    ledger["option_status"] = option_status
+    ledger["confirmed_results"] = confirmed_results
+    ledger["gaps"] = gaps
+
+    # 累积候选 chunks（去重）
+    existing_ids = {c.chunk_id for c in ledger["all_candidate_chunks"]}
+    for chunk in candidate_chunks:
+        if chunk.chunk_id not in existing_ids:
+            ledger["all_candidate_chunks"].append(chunk)
+            existing_ids.add(chunk.chunk_id)
+
+    # 累积已确认选项的证据
+    confirmed_ids = {c.chunk_id for c in ledger["confirmed_chunks"]}
+    for option_name, result in confirmed_results.items():
+        for chunk in evidence_map.get(option_name, []):
+            if chunk.chunk_id not in confirmed_ids:
+                ledger["confirmed_chunks"].append(chunk)
+                confirmed_ids.add(chunk.chunk_id)
+
+
+def _build_gap_driven_plan(
+    base_plan: dict[str, object],
+    ledger: dict[str, object],
+    options: list[str],
+    evaluation: dict[str, object],
+) -> dict[str, object]:
+    """根据账本中的 gaps 生成定向补检索计划。
+
+    与原 next_rewrite_from_feedback 的区别：
+    - option_focus 由 ledger 中实际的 insufficient 选项驱动（而非泛化策略）
+    - query_hints 注入 insufficient 选项的文本片段，让检索直接命中缺口
+    """
+    action = str(evaluation.get("next_action", "accept") or "accept")
+    if action == "accept":
+        return activate_rewrite(base_plan, "base")
+
+    # gaps 是 insufficient 选项的字母名
+    gap_options = [str(g) for g in ledger.get("gaps", [])]
+    # 提取 insufficient 选项的文本作为定向检索焦点
+    option_focus = [
+        options[i]
+        for i, name in enumerate(OPTION_NAMES[: len(options)])
+        if name in gap_options
+    ]
+
+    # 仍用 next_rewrite_from_feedback 选择 rewrite 策略，但注入 gap-driven 的 option_focus
+    plan = next_rewrite_from_feedback(base_plan, evaluation, options)
+
+    # 如果有 gap-driven 的选项焦点，注入到 plan 中让检索器优先搜这些选项
+    if option_focus:
+        # 合并而非替换——保留策略 hints，追加 gap 选项文本
+        existing_hints = list(plan.get("query_hints", []))
+        # 将 insufficient 选项的核心内容作为额外 hints
+        for opt_text in option_focus:
+            # 取选项前 60 字作为定向 hint
+            existing_hints.append(opt_text[:60])
+        plan["query_hints"] = existing_hints
+        plan["option_focus"] = option_focus
+
+    return plan
+
+
+def _merge_reasoning_results(
+    confirmed: dict[str, ReasoningItem],
+    new_results: list[ReasoningItem],
+    options: list[str],
+) -> list[ReasoningItem]:
+    """合并已确认的推理结果和新一轮的推理结果。
+
+    已确认为 support/refute 的选项保留原结果（不重算）；
+    只有原先是 insufficient/unknown 的选项才接受新结果。
+    保证了状态机单调收敛——confirmed 不会被后续轮次覆盖。
+    """
+    merged: dict[str, ReasoningItem] = {}
+    # 先放入已确认的
+    for name, item in confirmed.items():
+        merged[name] = item
+    # 新结果只覆盖未确认的
+    for result in new_results:
+        if result.option not in merged or merged[result.option].verdict not in ("support", "refute"):
+            merged[result.option] = result
+    # 按选项字母排序输出
+    return [merged[name] for name in OPTION_NAMES[: len(options)] if name in merged]
+
+
 def run_retrieval_loop(
     payload: RunQuestionTaskRequest,
     *,
@@ -41,6 +165,9 @@ def run_retrieval_loop(
     best_round: dict[str, object] | None = None
     max_iterations = int(base_plan.get("max_iterations", 3) or 3)
 
+    # 初始化跨轮账本
+    ledger = _init_ledger(payload.options)
+
     for iteration in range(1, max_iterations + 1):
         current_plan["iteration"] = iteration
         current_doc_ids = _resolve_doc_ids(
@@ -51,6 +178,8 @@ def run_retrieval_loop(
             previous_doc_ids=previous_doc_ids,
         )
         previous_doc_ids = current_doc_ids
+
+        # 检索：第二轮起使用累积的全部候选 + 新检索结果
         candidate_chunks = rank_chunks(
             payload.question,
             payload.options,
@@ -58,9 +187,28 @@ def run_retrieval_loop(
             current_doc_ids or None,
             current_plan,
         )
+
+        # 第二轮起：合并累积的已确认证据，让 reasoner 能看到跨轮证据
+        if iteration > 1 and ledger["confirmed_chunks"]:
+            existing_ids = {c.chunk_id for c in candidate_chunks}
+            for chunk in ledger["confirmed_chunks"]:
+                if chunk.chunk_id not in existing_ids:
+                    candidate_chunks.extend([chunk])
+                    existing_ids.add(chunk.chunk_id)
+
         reasoning_results, evidence_map = reason_options(
             payload.options, candidate_chunks, payload.question, payload.answer_format,
         )
+
+        # 更新账本（跨轮累积）
+        _update_ledger(ledger, reasoning_results, evidence_map, candidate_chunks)
+
+        # 合并推理结果：已确认的保留，只接受新确认的
+        if iteration > 1:
+            reasoning_results = _merge_reasoning_results(
+                ledger["confirmed_results"], reasoning_results, payload.options,
+            )
+
         evaluation = evaluate_retrieval_quality(
             question=payload.question,
             options=payload.options,
@@ -91,6 +239,8 @@ def run_retrieval_loop(
                 f"react_decision={evaluation['decision']}",
                 f"react_next_action={evaluation['next_action']}",
                 f"react_failures={','.join(evaluation['failure_reasons']) if evaluation['failure_reasons'] else 'none'}",
+                f"react_gaps={','.join(ledger['gaps']) if ledger['gaps'] else 'none'}",
+                f"react_confirmed={','.join(k for k,v in ledger['option_status'].items() if v in ('support','refute')) or 'none'}",
             ]
         )
 
@@ -102,7 +252,8 @@ def run_retrieval_loop(
                 "loop_logs": loop_logs,
             }
 
-        current_plan = next_rewrite_from_feedback(base_plan, evaluation, payload.options)
+        # 由 gaps 驱动下一轮的 query 改写
+        current_plan = _build_gap_driven_plan(base_plan, ledger, payload.options, evaluation)
 
     chosen = best_round or {
         "plan": current_plan,

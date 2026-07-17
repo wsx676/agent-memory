@@ -70,9 +70,57 @@ def _extract_numbers(text: str) -> list[str]:
     return NUMBER_PATTERN.findall(text)
 
 
+# 选项核心内容标记的正则：数值/百分号/金额/比率——这些是证据必须命中的硬标记
+_OPTION_NUMERIC_MARKERS = re.compile(
+    r"\d+(?:\.\d+)?\s*(?:%|万元|亿元|元|万|亿|倍|‰|分之)|\d+(?:\.\d+)?"
+)
+
+
+def _extract_option_markers(option: str) -> set[str]:
+    """提取选项中的"核心内容标记"——数值、百分号、金额等。
+
+    这些标记是判断证据是否实质匹配的关键：如果选项含具体数值，
+    但 top 证据中一个都没命中，说明证据和选项缺乏实质对应，
+    应判 insufficient 而非凭宽泛的词法重合判 support/refute。
+    """
+    return set(_OPTION_NUMERIC_MARKERS.findall(option))
+
+
+def _check_evidence_substance(
+    option: str,
+    top_evidence_text: str,
+) -> tuple[bool, float]:
+    """检查 top 证据与选项的实质匹配度。
+
+    返回 (has_substance, hit_ratio):
+    - has_substance: 证据是否实质命中了选项的核心内容
+    - hit_ratio: 选项标记在证据中的命中率（0~1）
+    """
+    markers = _extract_option_markers(option)
+    if not markers:
+        # 选项不含数值标记——用关键实体词判断
+        option_tokens = set(t for t in tokenize(option) if len(t) >= 2)
+        if not option_tokens:
+            return True, 1.0  # 无法提取标记，不阻拦
+        hit = sum(1 for t in option_tokens if t in top_evidence_text)
+        ratio = hit / len(option_tokens)
+        return ratio >= 0.3, ratio
+
+    # 选项含数值标记——至少命中 1 个才算实质匹配
+    hit = 0
+    for marker in markers:
+        # 数值标记做宽松匹配（去掉空格后子串包含）
+        compact_marker = re.sub(r"\s+", "", marker)
+        compact_text = re.sub(r"\s+", "", top_evidence_text)
+        if compact_marker in compact_text:
+            hit += 1
+    ratio = hit / len(markers) if markers else 1.0
+    return hit > 0, ratio
+
+
 def _check_negation(text: str) -> tuple[bool, bool]:
     """Check if text contains negation, and if there's an exception override.
-    
+
     Returns (has_negation, has_exception).
     """
     has_neg = any(pattern.search(text) for pattern in NEGATION_PATTERNS)
@@ -144,30 +192,42 @@ def _determine_verdict(
     scored_evidence: list[tuple[float, StructuredChunk]],
 ) -> tuple[str, float, list[str]]:
     """Determine verdict for an option based on scored evidence.
-    
+
+    三层 insufficient 检查（激活多轮补检索的前提）：
+    1. 绝对阈值：avg_score < 0.2 → insufficient
+    2. 实质匹配：选项含数值标记但 top 证据一个都没命中 → insufficient
+    3. 相对阈值：由 reason_options 做横向比较后回填（见 _apply_relative_threshold）
+
     Returns (verdict, confidence, matched_numbers).
     """
     if not scored_evidence or scored_evidence[0][0] < 0.1:
         return "insufficient", 0.1, []
-    
+
     # Take top-3 evidence
     top = scored_evidence[:3]
     avg_score = sum(s for s, _ in top) / len(top)
     top_text = " ".join(chunk.chunk_text for _, chunk in top)
-    
+
     # Extract matched numbers
     option_numbers = set(_extract_numbers(option))
     chunk_numbers = set(_extract_numbers(top_text))
     matched_numbers = sorted(option_numbers & chunk_numbers)
-    
+
+    # ── insufficient 检查 1：绝对阈值（从 0.15 提高到 0.2）──
+    if avg_score < 0.2:
+        return "insufficient", 0.2, matched_numbers
+
+    # ── insufficient 检查 2：实质匹配度 ──
+    # 选项含数值/百分号等硬标记，但 top 证据一个都没命中 → 证据和选项缺乏实质对应
+    has_substance, hit_ratio = _check_evidence_substance(option, top_text)
+    if not has_substance:
+        return "insufficient", 0.25, matched_numbers
+
     # Check negation in top evidence
     has_neg, has_exc = _check_negation(top_text)
-    
+
     # Determine verdict
-    if avg_score < 0.15:
-        verdict = "insufficient"
-        confidence = 0.2
-    elif has_neg and not has_exc:
+    if has_neg and not has_exc:
         # Evidence contains negation that may contradict the option
         option_tokens = set(tokenize(option))
         neg_context = _find_negation_context(top_text, option_tokens)
@@ -180,11 +240,11 @@ def _determine_verdict(
     else:
         verdict = "support"
         confidence = min(0.4 + avg_score * 0.6, 0.9)
-    
+
     # Boost confidence if numbers match
     if matched_numbers and verdict == "support":
         confidence = min(confidence + 0.1, 0.95)
-    
+
     return verdict, round(confidence, 2), matched_numbers
 
 
@@ -243,51 +303,83 @@ def reason_options(
     answer_format: str = "single",
 ) -> tuple[list[ReasoningItem], dict[str, list[StructuredChunk]]]:
     """Run per-option verification on all options.
-    
+
+    三阶段判定：
+    1. 逐选项独立判定（_determine_verdict：绝对阈值 + 实质匹配）
+    2. 横向相对置信度比较（远低于中位数的选项降级为 insufficient）
+    3. 计算题特殊处理（数值匹配可提升 insufficient→support）
+
     Args:
         options: List of option texts (A, B, C, D, ...)
         evidence: List of candidate evidence chunks
         question: The question text (for question-aware matching)
         answer_format: "single", "multi", or "judge"
-    
+
     Returns:
         Tuple of (reasoning items, evidence map by option name)
     """
+    import statistics as _stats
+
     results: list[ReasoningItem] = []
     evidence_map: dict[str, list[StructuredChunk]] = {}
-    
+
     is_calc_question = bool(CALC_KEYWORDS.search(question))
-    
+
+    # ── 阶段 1+2：逐选项打分并收集 top-1 分数用于横向比较 ──
+    pending: list[dict[str, object]] = []
     for option_name, option in zip(OPTION_NAMES, options):
-        # Score evidence for this option
         scored = _score_evidence_for_option(option, question, evidence)
         top_chunks = [chunk for _, chunk in scored[:3]]
-        
-        # Determine verdict
         verdict, confidence, matched_numbers = _determine_verdict(option, question, scored)
-        
-        # Check negation
         top_text = " ".join(chunk.chunk_text for chunk in top_chunks)
         has_neg, _ = _check_negation(top_text)
-        
+        top1_score = scored[0][0] if scored else 0.0
+        pending.append({
+            "option_name": option_name,
+            "option": option,
+            "verdict": verdict,
+            "confidence": confidence,
+            "matched_numbers": matched_numbers,
+            "top_chunks": top_chunks,
+            "has_neg": has_neg,
+            "top1_score": top1_score,
+        })
+        evidence_map[option_name] = top_chunks
+
+    # ── 阶段 2：横向相对置信度比较 ──
+    # 如果某选项的 top1_score 远低于同题中位数（< 35%），说明证据明显不匹配，
+    # 即使绝对分超过阈值也降级为 insufficient——这能激活多轮补检索。
+    all_scores = [p["top1_score"] for p in pending if p["top1_score"] > 0]
+    if len(all_scores) >= 3:
+        score_median = _stats.median(all_scores)
+        if score_median > 0.1:
+            for p in pending:
+                if p["verdict"] != "insufficient" and p["top1_score"] < score_median * 0.35:
+                    p["verdict"] = "insufficient"
+                    p["confidence"] = 0.25
+
+    # ── 阶段 3：计算题特殊处理 + 生成推理文本 ──
+    for p in pending:
+        verdict = p["verdict"]
+        confidence = p["confidence"]
+        matched_numbers = p["matched_numbers"]
+
         # For calculation questions, boost insufficient to support if numbers match
         if is_calc_question and verdict == "insufficient" and matched_numbers:
             verdict = "support"
             confidence = max(confidence, 0.5)
-        
-        # Generate reasoning
+
         reasoning = _generate_reasoning(
-            option_name, option, verdict, confidence,
-            top_chunks, matched_numbers, has_neg,
+            p["option_name"], p["option"], verdict, confidence,
+            p["top_chunks"], matched_numbers, p["has_neg"],
         )
-        
+
         results.append(
             ReasoningItem(
-                option=option_name,
+                option=p["option_name"],
                 verdict=verdict,  # type: ignore[arg-type]
                 reasoning=reasoning,
             )
         )
-        evidence_map[option_name] = top_chunks
-    
+
     return results, evidence_map

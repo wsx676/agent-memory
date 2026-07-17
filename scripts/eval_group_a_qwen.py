@@ -261,9 +261,15 @@ def main() -> None:
     results_jsonl.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in results), encoding="utf-8")
 
     # 生成 answer.csv（赛题提交格式：qid, answer, prompt_tokens, completion_tokens, total_tokens）
+    # 赛题评测脚本要求：第一行数据必须是 summary 汇总行，记录全量 Token 消耗。
     with ANSWER_CSV.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(["qid", "answer", "prompt_tokens", "completion_tokens", "total_tokens"])
+        # summary 行：汇总全量 Token，answer 列留空
+        total_prompt = sum(row["prompt_tokens"] for row in results)
+        total_completion = sum(row["completion_tokens"] for row in results)
+        total_all = sum(row["total_tokens"] for row in results)
+        writer.writerow(["summary", "", total_prompt, total_completion, total_all])
         for row in results:
             answer = row["answer"]
             # 清洗答案：提取大写字母，排序去重，禁止 N/A 或空值
@@ -271,7 +277,7 @@ def main() -> None:
             if not letters:
                 letters = "A"  # 兜底：避免空答案被判非法
             writer.writerow([row["qid"], letters, row["prompt_tokens"], row["completion_tokens"], row["total_tokens"]])
-    print(f"answer.csv 已生成: {ANSWER_CSV}")
+    print(f"answer.csv 已生成: {ANSWER_CSV} (summary: {total_prompt}+{total_completion}={total_all} tokens)")
 
     token_rows = [row for row in results if row["total_tokens"] > 0]
     durations = [row["duration_ms"] for row in results]

@@ -83,7 +83,13 @@ def evaluate_retrieval_quality(
     if numbers and number_hit_rate < 1.0:
         failure_reasons.append("number_coverage_low")
         next_action = "numbers_focus"
-    if verdict_counts.get("insufficient", 0) >= max(1, len(options) // 2):
+    # insufficient 触发条件按题型区分：
+    # - 多选题：只要有 1 个 insufficient 就 retry（错一个全错，不能放过）
+    # - 单选/判断题：>=2 个 insufficient 才 retry（避免过度重试简单题）
+    insuf_count = verdict_counts.get("insufficient", 0)
+    answer_format = str(plan.get("answer_format", "single"))
+    insuf_threshold = 1 if answer_format == "multi" else max(1, len(options) // 2)
+    if insuf_count >= insuf_threshold:
         failure_reasons.append("insufficient_options_high")
         next_action = "option_split"
     if section_coverage <= 1 and len(candidate_chunks) >= 2 and plan.get("question_type") in {"comparison", "calculation"}:
@@ -94,7 +100,9 @@ def evaluate_retrieval_quality(
         next_action = "section_focus"
 
     quality_label = "high" if quality_score >= 0.72 else "medium" if quality_score >= 0.5 else "low"
-    decision = "accept" if not failure_reasons or quality_label == "high" else "retry"
+    # 有 failure_reasons 就 retry，不再因为 quality_label=high 而跳过
+    # （之前 high 会强制 accept，导致 insufficient 题也被放过）
+    decision = "accept" if not failure_reasons else "retry"
     if not candidate_doc_ids:
         failure_reasons.append("candidate_doc_ids_empty")
         decision = "retry"

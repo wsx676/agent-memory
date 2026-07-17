@@ -352,10 +352,40 @@ def _serialize_table(table: list[list[str | None]]) -> str:
 
 
 def _extract_tables_from_pdf(file_path: Path) -> dict[int, list[str]]:
+    """提取 PDF 中的表格，返回 {页码: [序列化表格文本]}。
+
+    优先使用 PyMuPDF 内置的 find_tables()（速度快，适合大年报），
+    回退到 pdfplumber（兼容性更好但慢）。
+    """
+    # 首选 PyMuPDF find_tables
+    try:
+        import fitz  # type: ignore
+
+        document = fitz.open(file_path)
+        page_tables: dict[int, list[str]] = {}
+        for page_index, page in enumerate(document, start=1):
+            try:
+                tables = page.find_tables()
+                serialized_tables = []
+                for table in tables.tables:
+                    rows = table.extract()
+                    serialized = _serialize_table(rows)
+                    if serialized:
+                        serialized_tables.append(serialized)
+                if serialized_tables:
+                    page_tables[page_index] = serialized_tables
+            except Exception:
+                continue
+        document.close()
+        if page_tables:
+            return page_tables
+    except Exception:
+        pass
+    # 回退 pdfplumber
     try:
         import pdfplumber  # type: ignore
 
-        page_tables: dict[int, list[str]] = {}
+        page_tables = {}
         with pdfplumber.open(file_path) as pdf:
             for page_index, page in enumerate(pdf.pages, start=1):
                 serialized_tables = []
@@ -627,26 +657,36 @@ def _split_table_part(part: str) -> list[str]:
     年报表格（如资产负债表、利润表）与募集说明书表格常超过 MAX_CHUNK_LENGTH，
     原逻辑直接截断会丢失表格后半部分（含总资产、净利润等关键行），对数值类题目
     是致命的。改为按行累积切分，每块不超过 SPLIT_TARGET_LENGTH，且每块开头重复
-    [表格] 标记与表头行，保证任意一块都能独立命中检索。
+    [表格] 标记与表格列头行（首行），保证任意一块都能独立命中检索、列名对齐不丢。
     """
     if "\n" not in part:
         return [part[:MAX_CHUNK_LENGTH]]
     header_end = part.index("\n")
     header_line = part[:header_end]  # 通常是 "[表格]"
     body_lines = part[header_end + 1 :].split("\n")
+    if not body_lines:
+        return [part[:MAX_CHUNK_LENGTH]]
+    # 表格列头行（首行，如 "项目 | 本期金额 | 上期金额"）需要在每个切分块中重复，
+    # 否则第 2 块起的数据行缺失列名，数值类题目无法知道 "本期金额" 对应哪一列。
+    title_row = body_lines[0]
+    data_rows = body_lines[1:]
     blocks: list[str] = []
     current_rows: list[str] = []
-    current_len = 0
-    for row in body_lines:
+    # 每块都带列头，长度预算预扣列头行，避免超长块挤掉列头。
+    current_len = len(title_row)
+    for row in data_rows:
         row_len = len(row) + 1
         if current_rows and current_len + row_len > SPLIT_TARGET_LENGTH:
-            blocks.append(f"{header_line}\n" + "\n".join(current_rows))
+            blocks.append(f"{header_line}\n{title_row}\n" + "\n".join(current_rows))
             current_rows = []
-            current_len = 0
+            current_len = len(title_row)
         current_rows.append(row)
         current_len += row_len
     if current_rows:
-        blocks.append(f"{header_line}\n" + "\n".join(current_rows))
+        blocks.append(f"{header_line}\n{title_row}\n" + "\n".join(current_rows))
+    elif not blocks:
+        # 整张表只有列头一行，仍保留。
+        blocks.append(f"{header_line}\n{title_row}")
     return blocks or [part[:MAX_CHUNK_LENGTH]]
 
 

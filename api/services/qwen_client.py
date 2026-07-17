@@ -6,8 +6,6 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-import httpx
-
 from api.models import ReasoningItem, StructuredChunk
 
 
@@ -274,39 +272,44 @@ def _call_qwen_api(
     api_key: str,
     model_name: str,
     base_url: str,
+    *,
+    force_thinking: bool | None = None,
 ) -> QwenAnswer | None:
     """Core API call — shared by first-pass and self-check.
 
     Returns None when answer cannot be extracted (caller should retry or fallback).
     Includes fallback answer extraction for non-JSON model outputs.
+
+    使用 OpenAI SDK 调用 DashScope 兼容接口。enable_thinking / thinking_budget
+    等非标准参数通过 extra_body 传入（赛题教程推荐的传参方式）。
+
+    force_thinking: 显式控制是否开启思考模式。None 时回退到环境变量
+    QWEN_ENABLE_THINKING（默认关闭）。调用方可根据题型决定——计算题/比较题
+    开启 thinking 有助推理，简单事实查找关闭即可省 token 和时延。
     """
-    # enable_thinking 默认关闭：P2v3 验证过 Qwen3 思考模式会产生 500+ 内部 token、
-    # 非确定性输出与偶发空/截断响应，关闭后 100 题全部首次成功、延迟降 71%。
-    # 保留 QWEN_ENABLE_THINKING 开关以便 A/B 对比，但默认回到已验证的最优配置。
-    enable_thinking = _get_bool_setting("QWEN_ENABLE_THINKING", default=False)
-    request_body: dict[str, object] = {
-        "model": model_name,
-        "temperature": 0,
-        "max_tokens": 4096 if answer_format == "multi" else 3072,
-        "response_format": {"type": "json_object"},
-        "messages": messages,
-        "enable_thinking": enable_thinking,
-    }
+    # enable_thinking 优先级：force_thinking 参数 > 环境变量 > 默认关闭
+    if force_thinking is not None:
+        enable_thinking = force_thinking
+    else:
+        enable_thinking = _get_bool_setting("QWEN_ENABLE_THINKING", default=False)
+    extra_body: dict[str, object] = {"enable_thinking": enable_thinking}
     if enable_thinking:
-        request_body["thinking_budget"] = 2560
-    response = httpx.post(
-        f"{base_url}/chat/completions",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json=request_body,
-        timeout=90.0,
+        extra_body["thinking_budget"] = 2560
+
+    from openai import OpenAI
+
+    client = OpenAI(api_key=api_key, base_url=f"{base_url}", timeout=90.0)
+    completion = client.chat.completions.create(
+        model=model_name,
+        messages=messages,  # type: ignore[arg-type]
+        temperature=0,
+        max_tokens=4096 if answer_format == "multi" else 3072,
+        response_format={"type": "json_object"},
+        extra_body=extra_body,
     )
-    response.raise_for_status()
-    payload = response.json()
-    message = payload["choices"][0]["message"]["content"]
-    usage = payload.get("usage", {})
+    message = completion.choices[0].message.content or ""
+    usage_obj = completion.usage
+    payload_model = completion.model or model_name
 
     # Empty content — model returned nothing
     if not message or not message.strip():
@@ -342,10 +345,10 @@ def _call_qwen_api(
     return QwenAnswer(
         answer=answer,
         reasoning=reasoning,
-        prompt_tokens=int(usage.get("prompt_tokens", 0) or 0),
-        completion_tokens=int(usage.get("completion_tokens", 0) or 0),
-        total_tokens=int(usage.get("total_tokens", 0) or 0),
-        model=str(payload.get("model", model_name)),
+        prompt_tokens=int(usage_obj.prompt_tokens if usage_obj else 0),
+        completion_tokens=int(usage_obj.completion_tokens if usage_obj else 0),
+        total_tokens=int(usage_obj.total_tokens if usage_obj else 0),
+        model=payload_model,
     )
 
 
@@ -389,6 +392,8 @@ def answer_with_qwen(
     answer_format: str,
     evidence: list[StructuredChunk],
     reasoning_hints: list[ReasoningItem],
+    *,
+    force_thinking: bool | None = None,
 ) -> QwenAnswer | None:
     status = get_qwen_config_status()
     if not status.enabled:
@@ -403,7 +408,7 @@ def answer_with_qwen(
     # Attempt 1: full prompt with reasoning hints
     messages = _build_messages(question, options, answer_format, evidence, reasoning_hints)
     try:
-        result = _call_qwen_api(messages, answer_format, api_key, model_name, base_url)
+        result = _call_qwen_api(messages, answer_format, api_key, model_name, base_url, force_thinking=force_thinking)
         if result is not None:
             return result
     except Exception:  # noqa: BLE001
@@ -412,7 +417,7 @@ def answer_with_qwen(
     # Attempt 2: simplified prompt (no reasoning hints, shorter evidence)
     simple_messages = _build_simple_messages(question, options, answer_format, evidence)
     try:
-        result = _call_qwen_api(simple_messages, answer_format, api_key, model_name, base_url)
+        result = _call_qwen_api(simple_messages, answer_format, api_key, model_name, base_url, force_thinking=force_thinking)
         if result is not None:
             return result
     except Exception:  # noqa: BLE001
@@ -420,7 +425,7 @@ def answer_with_qwen(
 
     # Attempt 3: simplified prompt again (Qwen is non-deterministic — retry may succeed)
     try:
-        return _call_qwen_api(simple_messages, answer_format, api_key, model_name, base_url)
+        return _call_qwen_api(simple_messages, answer_format, api_key, model_name, base_url, force_thinking=force_thinking)
     except Exception:  # noqa: BLE001
         return None
 

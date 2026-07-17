@@ -687,7 +687,7 @@ def test_retrieval_loop_retries_with_rewrite(monkeypatch) -> None:
         call_count["rank_chunks"] += 1
         return chunks
 
-    def fake_reason_options(options, evidence):  # noqa: ANN001
+    def fake_reason_options(options, evidence, question="", answer_format="single"):  # noqa: ANN001
         return (
             [
                 ReasoningItem(option="A", verdict="insufficient", reasoning="证据不足"),

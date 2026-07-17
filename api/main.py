@@ -129,6 +129,42 @@ def _save_chunks(items: list[dict]) -> None:
     write_json(CHUNKS_FILE, items)
 
 
+def _write_answer_csv(qid: str, answer: str, prompt_tokens: int, completion_tokens: int, total_tokens: int) -> None:
+    """追加一道题的答案到 answer.csv，并维护 summary 汇总行。
+
+    赛题评测脚本要求 CSV 第一行数据必须是 summary 行（汇总全量 Token），
+    答案列留空。本函数读取已有行、追加新行、重算 summary 后整体重写。
+    """
+    answer_path = Path(ANSWER_FILE)
+    rows: list[list[str]] = []
+    if answer_path.exists():
+        import csv as csv_module
+
+        with answer_path.open(encoding="utf-8", newline="") as handle:
+            reader = csv_module.reader(handle)
+            all_rows = list(reader)
+        # 跳过表头和旧的 summary 行，保留题目数据行
+        for row in all_rows[1:]:
+            if row and row[0] != "summary":
+                rows.append(row)
+
+    rows.append([qid, answer, str(prompt_tokens), str(completion_tokens), str(total_tokens)])
+
+    # 重算 summary
+    total_prompt = sum(int(r[2]) for r in rows if len(r) > 2 and r[2].lstrip("-").isdigit())
+    total_completion = sum(int(r[3]) for r in rows if len(r) > 3 and r[3].lstrip("-").isdigit())
+    total_all = sum(int(r[4]) for r in rows if len(r) > 4 and r[4].lstrip("-").isdigit())
+
+    import csv as csv_module
+
+    with answer_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv_module.writer(handle)
+        writer.writerow(["qid", "answer", "prompt_tokens", "completion_tokens", "total_tokens"])
+        writer.writerow(["summary", "", str(total_prompt), str(total_completion), str(total_all)])
+        for row in rows:
+            writer.writerow(row)
+
+
 @app.get("/api/health")
 def health() -> dict[str, object]:
     qwen_status = get_qwen_config_status()
@@ -366,13 +402,13 @@ def run_task(payload: RunQuestionTaskRequest) -> dict:
     )
     write_json(EVIDENCE_FILE, evidence_store)
 
-    with Path(ANSWER_FILE).open("a", encoding="utf-8", newline="") as handle:
-        writer = csv.writer(handle)
-        if handle.tell() == 0:
-            writer.writerow(["qid", "answer", "prompt_tokens", "completion_tokens", "total_tokens"])
-        writer.writerow(
-            [payload.qid, answer, token_usage["promptTokens"], token_usage["completionTokens"], token_usage["totalTokens"]]
-        )
+    _write_answer_csv(
+        payload.qid,
+        answer,
+        token_usage["promptTokens"],
+        token_usage["completionTokens"],
+        token_usage["totalTokens"],
+    )
 
     return {"taskId": task_id, "status": "done"}
 
