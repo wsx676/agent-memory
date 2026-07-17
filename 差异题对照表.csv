@@ -1,0 +1,11 @@
+qid,题型,merged,deduped,变化,doc_ids
+fc_a_005,多选题,AB,ABD,AB->ABD,text01 | text10
+fc_a_008,单选题,D,A,D->A,text02 | text03
+fin_a_005,跨公司财务指标对比,AD,ABD,AD->ABD,annual_byd_2024_report | annual_midea_2024_report
+fin_a_009,多选题,AC,ABC,AC->ABC,annual_byd_2024_report | annual_chinamobile_2025_report
+fin_a_011,多选题,ACD,CD,ACD->CD,annual_byd_2025_report | annual_midea_2025_report
+fin_a_015,单选题,A,D,A->D,annual_catl_2024_report | annual_chinamobile_2025_report
+ins_a_007,推理判断,BC,C,BC->C,1 | 2 | 16
+ins_a_015,比较分析,B,AB,B->AB,1 | 4 | 7 | 13
+res_a_016,多选题,CD,BCD,CD->BCD,pack2_text03 | pack2_text20
+res_a_017,多选题,B,BD,B->BD,pack2_text03 | pack2_text17
