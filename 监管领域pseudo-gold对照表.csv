@@ -1,0 +1,21 @@
+qid,题型,我的答案,P2v6答案,是否一致,差异说明
+reg_a_001,multi/事实查询,ACD,ACD,✓,
+reg_a_002,multi/事实查询,ABC,AC,✗,P2v6漏选B：doc008 L132明确"备案信息不准确导致差异且差异重大的→30个工作日内提交差异报告"，与B完全匹配
+reg_a_003,tf/事实查询,A,B,✗,P2v6误判：doc008 L95要求上市公司受益所有人信息"应当至少包括...照片"；doc015 L28"高敏感性数据项原则上不在终端设备中存储"。两法规组合→正确
+reg_a_004,multi/事实查询,ABC,BC,✗,P2v6漏选A：doc016 L212明确"董事和高级管理人员停止任职→自职务变动之日起7日内报告"
+reg_a_005,multi/事实查询,ABC,BC,✗,P2v6漏选A：doc018 L82明确"高级管理人员同一机构内调任→无需变更申请但10日内报告"
+reg_a_006,tf/事实查询,A,A,✓,
+reg_a_007,multi/事实查询,ACD,ACD,✓,
+reg_a_008,mcq/事实查询,A,A,✓,
+reg_a_009,multi/事实查询,ABD,ABD,✓,
+reg_a_010,tf/事实查询,B,B,✓,
+reg_a_011,multi/事实查询,ACD,CD,✗,P2v6漏选A：csrc_0038_att1 L670-671明确"年度报告内容应当经董事会审议通过。未经董事会审议通过的年度报告不得披露"
+reg_a_012,multi/事实查询,ABD,ABD,✓,
+reg_a_013,tf/事实查询,A,A,✓,
+reg_a_014,multi/事实查询,ABD,ABD,✓,
+reg_a_015,mcq/事实查询,C,C,✓,
+reg_a_016,multi/事实查询,ABD,ABD,✓,
+reg_a_017,multi/事实查询,ABC,AB,✗,gold修正：C选项应选
+reg_a_018,tf/事实查询,A,A,✓,
+reg_a_019,multi/事实查询,ABD,BD,✗,P2v6漏选A：csrc_0027_att1 L338明确"本规定自2025年8月22日起施行"
+reg_a_020,multi/事实查询,ABD,ABD,✓,

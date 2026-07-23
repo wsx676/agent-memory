@@ -14,13 +14,7 @@ QUESTIONS_DIR = PROJECT_ROOT / "public_dataset_a" / "questions" / "group_a"
 EXECUTION_LOG = PROJECT_ROOT / "validation_outputs" / "public_dataset_a" / "testing" / "group_a" / "group_a_execution_log.jsonl"
 OUTPUT_FILE = PROJECT_ROOT / "data" / "answer.csv"
 OPTION_KEYS = ("A", "B", "C", "D", "E", "F")
-ANSWER_FORMAT_MAPPING = {
-    "single": "single",
-    "mcq": "single",
-    "multi": "multi",
-    "tf": "judge",
-    "judge": "judge",
-}
+VALID_ANSWER_FORMATS = ("mcq", "multi", "tf")
 
 
 def read_json(path: Path) -> Any:
@@ -53,8 +47,8 @@ def load_cases() -> list[dict[str, Any]]:
             continue
         for row in payload:
             options = normalize_options(row.get("options"))
-            answer_format = ANSWER_FORMAT_MAPPING.get(str(row.get("answer_format", "")).lower())
-            if not options or not answer_format:
+            answer_format = str(row.get("answer_format", "")).lower()
+            if not options or answer_format not in VALID_ANSWER_FORMATS:
                 continue
             cases.append(
                 {
@@ -80,7 +74,7 @@ def load_answers() -> dict[str, str]:
 
 def normalize_answer(raw_answer: str, answer_format: str) -> str:
     letters = "".join(ch for ch in raw_answer.upper() if ch in OPTION_KEYS)
-    if answer_format in {"single", "judge"}:
+    if answer_format in {"mcq", "tf"}:
         return letters[:1] or "A"
     deduped = "".join(dict.fromkeys(letters))
     return deduped or "A"

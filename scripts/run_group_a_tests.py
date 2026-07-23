@@ -29,13 +29,7 @@ LOG_FILE = OUTPUT_DIR / "group_a_execution_log.jsonl"
 REPORT_FILE = OUTPUT_DIR / "group_a_test_report.md"
 
 REQUIRED_FIELDS = {"qid", "domain", "split", "question", "options", "answer_format", "type", "doc_ids"}
-ANSWER_FORMAT_MAPPING = {
-    "single": "single",
-    "mcq": "single",
-    "multi": "multi",
-    "tf": "judge",
-    "judge": "judge",
-}
+VALID_ANSWER_FORMATS = ("mcq", "multi", "tf")
 OPTION_KEYS = ("A", "B", "C", "D", "E", "F")
 
 
@@ -100,11 +94,12 @@ def normalize_answer_format(raw_answer_format: Any) -> tuple[str | None, list[st
     if not isinstance(raw_answer_format, str):
         issues.append("answer_format_not_string")
         return None, issues
-    normalized = ANSWER_FORMAT_MAPPING.get(raw_answer_format.lower())
-    if normalized is None:
+    normalized = raw_answer_format.lower()
+    if normalized not in VALID_ANSWER_FORMATS:
         issues.append("answer_format_unsupported")
-    elif normalized != raw_answer_format:
-        issues.append("answer_format_requires_mapping")
+        return None, issues
+    if normalized != raw_answer_format:
+        issues.append("answer_format_requires_normalization")
     return normalized, issues
 
 

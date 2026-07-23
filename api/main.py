@@ -18,7 +18,7 @@ from api.models import (
     TaskResultResponse,
     UploadDocumentRequest,
 )
-from api.services.formatter import build_evidence_items, choose_answer, needs_self_check
+from api.services.formatter import build_evidence_items, needs_self_check
 from api.services.memory import build_memory_ledger
 from api.services.preprocess import create_document_record, preprocess_document
 from api.services.qwen_client import QwenAnswer, answer_with_qwen, get_qwen_config_status, verify_with_qwen
@@ -256,8 +256,7 @@ def run_task(payload: RunQuestionTaskRequest) -> dict:
     reasoning_results = list(retrieval_result["reasoning_results"])
     evidence_map = dict(retrieval_result["evidence_map"])
     evaluation = dict(retrieval_result["evaluation"])
-    fallback_answer = choose_answer(payload.answer_format, reasoning_results)
-    answer = fallback_answer
+    answer = "A"  # default when LLM unavailable; replaced by Qwen if enabled
     qwen_status = get_qwen_config_status()
     qwen_result = None
     qwen_error = None
@@ -273,6 +272,8 @@ def run_task(payload: RunQuestionTaskRequest) -> dict:
                 answer_format=payload.answer_format,
                 evidence=candidate_chunks,
                 reasoning_hints=reasoning_results,
+                force_thinking=True,
+                domain=str(plan.get("domain", "general")),
             )
         except Exception as exc:  # noqa: BLE001
             qwen_error = f"{type(exc).__name__}: {exc}"
@@ -290,6 +291,7 @@ def run_task(payload: RunQuestionTaskRequest) -> dict:
                     evidence=candidate_chunks,
                     reasoning_hints=reasoning_results,
                     first_answer=answer,
+                    domain=str(plan.get("domain", "general")),
                 )
                 if verified is not None:
                     answer = verified.answer
@@ -362,7 +364,6 @@ def run_task(payload: RunQuestionTaskRequest) -> dict:
             f"retrieval_quality={evaluation.get('quality_score', 0.0)}",
             f"retrieval_quality_label={evaluation.get('quality_label', 'unknown')}",
             f"retrieval_failures={','.join(evaluation.get('failure_reasons', [])) or 'none'}",
-            f"fallback_answer={fallback_answer}",
             f"qwen_enabled={str(qwen_status.enabled).lower()}",
             f"qwen_requested_model={qwen_status.requested_model}",
             f"qwen_missing_settings={','.join(qwen_status.missing_settings) or 'none'}",

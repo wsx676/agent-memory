@@ -1,0 +1,16 @@
+﻿qid,题型,置信度,fallback,LLM首轮,自检后,最终答案,pseudo_gold,是否正确,BM25判定,低置信原因
+fc_a_001,multi,中,B,ABD,ABD,ABD,ABD,正确,A:refute B:support C:refute D:refute,LLM首轮(ABD)≠fallback(B); fallback也错(B≠ABD)
+fc_a_002,multi,低,C,A,ABD,ABD,ABD,正确,A:refute B:refute C:support D:refute,LLM首轮(A)≠fallback(C); 自检改答案(A->ABD); fallback也错(C≠ABD)
+fc_a_004,mcq/tf,低,A,A,A,A,ABD,错误,A:support B:insufficient C:refute D:insufficient,与gold不一致(A≠ABD); fallback也错(A≠ABD)
+fc_a_005,multi,中,A,ABD,ABD,ABD,ABD,正确,A:refute B:refute C:refute D:refute,LLM首轮(ABD)≠fallback(A); fallback也错(A≠ABD)
+fc_a_007,mcq/tf,低,A,B,B,B,BD,错误,A:refute B:refute C:refute D:refute,LLM首轮(B)≠fallback(A); 与gold不一致(B≠BD); fallback也错(A≠BD)
+fc_a_008,mcq/tf,中,A,B,B,B,B,正确,A:insufficient B:refute C:insufficient D:insufficient,LLM首轮(B)≠fallback(A); fallback也错(A≠B); BM25不充分3项
+fc_a_009,multi,中,AD,ABD,ABD,ABD,ABD,正确,A:insufficient B:refute C:refute D:insufficient,LLM首轮(ABD)≠fallback(AD); fallback也错(AD≠ABD)
+fc_a_011,multi,中,ACD,AB,AB,AB,AB,正确,A:insufficient B:refute C:insufficient D:insufficient,LLM首轮(AB)≠fallback(ACD); fallback也错(ACD≠AB); BM25不充分3项
+fc_a_012,multi,低,BC,AC,AC,AC,ACD,错误,A:refute B:support C:support D:refute,LLM首轮(AC)≠fallback(BC); 与gold不一致(AC≠ACD); fallback也错(BC≠ACD)
+fc_a_014,mcq/tf,低,BD,B,B,B,A,错误,A:insufficient B:support C:refute D:support,LLM首轮(B)≠fallback(BD); 与gold不一致(B≠A); fallback也错(BD≠A)
+fc_a_015,mcq/tf,低,A,A,A,A,B,错误,A:insufficient B:refute C:insufficient D:insufficient,与gold不一致(A≠B); fallback也错(A≠B); BM25不充分3项
+fc_a_016,multi,中,CD,ABC,ABC,ABC,ABC,正确,A:refute B:refute C:support D:support,LLM首轮(ABC)≠fallback(CD); fallback也错(CD≠ABC)
+fc_a_017,multi,中,C,ABD,ABD,ABD,ABD,正确,A:refute B:refute C:support D:refute,LLM首轮(ABD)≠fallback(C); fallback也错(C≠ABD)
+fc_a_019,multi,中,CD,AB,AB,AB,AB,正确,A:insufficient B:refute C:support D:support,LLM首轮(AB)≠fallback(CD); fallback也错(CD≠AB)
+fc_a_020,multi,低,BC,C,AB,AB,AB,正确,A:refute B:support C:support D:refute,LLM首轮(C)≠fallback(BC); 自检改答案(C->AB); fallback也错(BC≠AB)

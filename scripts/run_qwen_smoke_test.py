@@ -14,7 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from api.models import RunQuestionTaskRequest, StructuredChunk
-from api.services.formatter import build_evidence_items, choose_answer
+from api.services.formatter import build_evidence_items
 from api.services.planner import build_plan
 from api.services.qwen_client import answer_with_qwen, get_qwen_config_status
 from api.services.reasoner import reason_options
@@ -27,7 +27,7 @@ CHUNKS_FILE = PREPROCESSED_DIR / "chunks.jsonl"
 OUTPUT_DIR = PROJECT_ROOT / "validation_outputs" / "public_dataset_a" / "testing" / "qwen_smoke_test"
 RESULTS_JSONL = OUTPUT_DIR / "results.jsonl"
 REPORT_MD = OUTPUT_DIR / "report.md"
-ANSWER_FORMAT_MAPPING = {"single": "single", "mcq": "single", "multi": "multi", "tf": "judge", "judge": "judge"}
+VALID_ANSWER_FORMATS = ("mcq", "multi", "tf")
 OPTION_KEYS = ("A", "B", "C", "D", "E", "F")
 
 
@@ -98,8 +98,8 @@ def _collect_cases(offset: int, limit: int, qid: str | None = None) -> list[dict
             if len(cases) >= limit:
                 return cases
             options = _normalize_options(raw_case.get("options"))
-            answer_format = ANSWER_FORMAT_MAPPING.get(str(raw_case.get("answer_format", "")).lower())
-            if not options or not answer_format:
+            answer_format = str(raw_case.get("answer_format", "")).lower()
+            if not options or answer_format not in VALID_ANSWER_FORMATS:
                 seen += 1
                 continue
             cases.append(
@@ -167,7 +167,6 @@ def main() -> None:
         chunks = _load_candidate_chunks(request.doc_ids or [])
         candidate_chunks = rank_chunks(request.question, request.options, chunks, request.doc_ids or None, plan)
         reasoning_results, evidence_map = reason_options(request.options, candidate_chunks)
-        fallback_answer = choose_answer(request.answer_format, reasoning_results)
         qwen_result = None
         qwen_error = None
         try:
@@ -177,6 +176,7 @@ def main() -> None:
                 answer_format=request.answer_format,
                 evidence=candidate_chunks,
                 reasoning_hints=reasoning_results,
+                force_thinking=(request.answer_format != "tf"),
             )
         except Exception as exc:  # noqa: BLE001
             qwen_error = f"{type(exc).__name__}: {exc}"
@@ -184,7 +184,6 @@ def main() -> None:
         logs = [
             f"candidate_doc_count={len(request.doc_ids or [])}",
             f"candidate_chunk_count={len(candidate_chunks)}",
-            f"fallback_answer={fallback_answer}",
             f"llm_used={'qwen' if qwen_result is not None else 'local_rule'}",
             f"llm_model={qwen_result.model if qwen_result is not None else 'none'}",
             f"llm_error={qwen_error or 'none'}",
@@ -192,7 +191,7 @@ def main() -> None:
         row = {
             "qid": request.qid,
             "domain": case["domain"],
-            "answer": qwen_result.answer if qwen_result is not None else fallback_answer,
+            "answer": qwen_result.answer if qwen_result is not None else "A",
             "evidence_count": len(evidence_items),
             "prompt_tokens": qwen_result.prompt_tokens if qwen_result is not None else 0,
             "completion_tokens": qwen_result.completion_tokens if qwen_result is not None else 0,
@@ -205,7 +204,7 @@ def main() -> None:
         new_rows.append(row)
         print(
             f"[done] qid={request.qid} answer={row['answer']} "
-            f"fallback={fallback_answer} chunks={len(candidate_chunks)} model={row['llm_model']}"
+            f"chunks={len(candidate_chunks)} model={row['llm_model']}"
         )
         _write_jsonl(RESULTS_JSONL, rows)
         _write_text(REPORT_MD, _render_report(rows))

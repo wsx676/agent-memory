@@ -32,34 +32,34 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from api.models import RunQuestionTaskRequest, StructuredChunk
-from api.services.formatter import build_evidence_items, choose_answer, needs_self_check
-from api.services.planner import detect_question_type
+from api.services.formatter import build_evidence_items, needs_self_check
 from api.services.qwen_client import QwenAnswer, answer_with_qwen, get_qwen_config_status, verify_with_qwen
 from api.services.retrieval_loop import run_retrieval_loop
 
 # 题型 → 是否开启 thinking 的映射。
-# 计算题/比较题推理步骤多，thinking 有助于分步推理；其他题型关闭省时延。
-THINKING_QUESTION_TYPES = {"calculation", "comparison"}
+# 全题型开启 thinking：数值比较/判断推理均需分步思考，关闭会导致 tf 题漏判。
+THINKING_QUESTION_TYPES = {"calculation", "comparison", "tf", "multi_select", "fact_lookup", "clause_lookup"}
 
 
 # ── 路径常量 ────────────────────────────────────────────────────────
 PREPROCESSED_DIR = PROJECT_ROOT / "validation_outputs" / "public_dataset_a" / "preprocessed"
 QUESTIONS_DIR = PROJECT_ROOT / "public_dataset_a" / "questions" / "group_a"
 
-ANSWER_FORMAT_MAPPING = {
-    "mcq": "single",
-    "single": "single",
-    "单选": "single",
-    "单选题": "single",
-    "multi": "multi",
-    "多选": "multi",
-    "多选题": "multi",
-    "tf": "judge",
-    "judge": "judge",
-    "判断": "judge",
-    "判断题": "judge",
+VALID_ANSWER_FORMATS = ("mcq", "multi", "tf")
+_ANSWER_FORMAT_ALIASES = {
+    "单选": "mcq", "单选题": "mcq",
+    "多选": "multi", "多选题": "multi",
+    "判断": "tf", "判断题": "tf",
 }
 OPTION_KEYS = ("A", "B", "C", "D", "E", "F")
+
+
+def _resolve_answer_format(raw: str) -> str | None:
+    """Resolve answer_format to canonical mcq/multi/tf, with Chinese alias support."""
+    lower = raw.lower()
+    if lower in VALID_ANSWER_FORMATS:
+        return lower
+    return _ANSWER_FORMAT_ALIASES.get(lower)
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -88,7 +88,7 @@ def load_cases() -> list[dict[str, Any]]:
         payload = json.loads(file_path.read_text(encoding="utf-8"))
         for raw in payload:
             options = normalize_options(raw.get("options"))
-            answer_format = ANSWER_FORMAT_MAPPING.get(str(raw.get("answer_format", "")).lower())
+            answer_format = _resolve_answer_format(str(raw.get("answer_format", "")))
             if not options or not answer_format:
                 continue
             cases.append({
@@ -118,12 +118,10 @@ def process_one_case(
         docIds=case["doc_ids"],
     )
     retrieval = run_retrieval_loop(request, available_doc_ids=available_doc_ids, structured_chunks=chunks)
-    fallback_answer = choose_answer(request.answer_format, retrieval["reasoning_results"])
     evidence_items = build_evidence_items(retrieval["reasoning_results"], retrieval["evidence_map"])
 
-    # 题型自适应 thinking：计算题/比较题开启，其他题型关闭
-    question_type = detect_question_type(request)
-    use_thinking = question_type in THINKING_QUESTION_TYPES
+    # 全题型开启 thinking：数值比较/判断推理均需分步思考
+    use_thinking = True
 
     qwen_error = None
     qwen_result: QwenAnswer | None = None
@@ -135,11 +133,12 @@ def process_one_case(
             evidence=list(retrieval["candidate_chunks"]),
             reasoning_hints=list(retrieval["reasoning_results"]),
             force_thinking=use_thinking,
+            domain=case["domain"],
         )
     except Exception as exc:  # noqa: BLE001
         qwen_error = f"{type(exc).__name__}: {exc}"
 
-    final_answer = qwen_result.answer if qwen_result is not None else fallback_answer
+    final_answer = qwen_result.answer if qwen_result is not None else "A"
 
     # 低置信度答案自检
     self_checked = False
@@ -153,6 +152,7 @@ def process_one_case(
                 evidence=list(retrieval["candidate_chunks"]),
                 reasoning_hints=list(retrieval["reasoning_results"]),
                 first_answer=final_answer,
+                domain=case["domain"],
             )
             if verified is not None:
                 final_answer = verified.answer
@@ -176,7 +176,6 @@ def process_one_case(
         "completion_tokens": int(qwen_result.completion_tokens) if qwen_result is not None else 0,
         "total_tokens": int(qwen_result.total_tokens) if qwen_result is not None else 0,
         "duration_ms": duration_ms,
-        "fallback_answer": fallback_answer,
         "evidence": [item.model_dump(by_alias=True) for item in evidence_items],
         "error": qwen_error,
     }
@@ -276,7 +275,7 @@ def main() -> None:
                 results[idx] = {
                     "qid": case["qid"], "domain": case["domain"], "answer": "A",
                     "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
-                    "duration_ms": 0, "fallback_answer": "A", "evidence": [],
+                    "duration_ms": 0, "evidence": [],
                     "error": f"{type(exc).__name__}: {exc}",
                 }
             done_count += 1

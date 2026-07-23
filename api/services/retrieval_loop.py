@@ -11,6 +11,93 @@ from api.services.retriever import rank_chunks, rank_documents
 OPTION_NAMES = ("A", "B", "C", "D", "E", "F")
 
 
+# Regex for extracting meaningful numbers (>= 2 chars) from option text.
+# Used by _supplement_numeric_chunks for supplementary retrieval.
+_NUM_PATTERN = re.compile(r"\d{2,}(?:\.\d+)?%?|\d{4}年")
+
+
+def _ensure_title_chunks(
+    candidate_chunks: list[StructuredChunk],
+    all_chunks: list[StructuredChunk],
+    doc_ids: list[str],
+) -> list[StructuredChunk]:
+    """Ensure each document's first/title chunk is in the candidate set.
+
+    BM25 sometimes misses the title/summary chunk (page 1) which contains
+    core metadata like issuer name, issue amount, stock code, and dates.
+    This guarantee prevents 3 classes of retrieval-miss errors.
+    """
+    existing_ids = {c.chunk_id for c in candidate_chunks}
+    for doc_id in doc_ids:
+        doc_chunks = [c for c in all_chunks if c.doc_id == doc_id]
+        if not doc_chunks:
+            continue
+        # Heuristic: first chunk = lowest page_no, then lowest chunk_id
+        first_chunk = min(doc_chunks, key=lambda c: (c.page_no, c.chunk_id))
+        if first_chunk.chunk_id not in existing_ids:
+            candidate_chunks.append(first_chunk)
+            existing_ids.add(first_chunk.chunk_id)
+    return candidate_chunks
+
+
+def _supplement_numeric_chunks(
+    candidate_chunks: list[StructuredChunk],
+    all_chunks: list[StructuredChunk],
+    doc_ids: list[str],
+    options: list[str],
+) -> list[StructuredChunk]:
+    """Supplementary retrieval: find chunks containing numbers/dates from options.
+
+    BM25 keyword matching is weak for numeric queries (e.g. "10亿", "150%",
+    "300866"). This function directly scans doc chunks for option-mentioned
+    numbers and injects any missed chunks into the candidate set.
+
+    Numbers are processed in order of specificity (longest first) so that
+    distinctive numbers like ``150%`` or ``300866`` are matched before
+    common ones like ``10`` that appear in many chunks.
+    """
+    numbers: set[str] = set()
+    for opt in options:
+        numbers.update(_NUM_PATTERN.findall(opt))
+    if not numbers:
+        return candidate_chunks
+
+    existing_ids = {c.chunk_id for c in candidate_chunks}
+    # Sort by length desc — specific numbers first, common ones last
+    # Use secondary alphabetical sort to eliminate PYTHONHASHSEED non-determinism
+    norm_numbers = sorted(
+        {re.sub(r"\s+", "", n) for n in numbers},
+        key=lambda x: (-len(x), x),
+    )
+
+    doc_id_set = set(doc_ids)
+    # Pre-filter doc chunks and normalise their text once
+    doc_chunks = [
+        (c, re.sub(r"\s+", "", c.chunk_text or ""))
+        for c in all_chunks
+        if c.doc_id in doc_id_set and c.chunk_id not in existing_ids
+    ]
+
+    MAX_PER_NUMBER = 3   # cap per number to avoid flooding
+    MAX_TOTAL = 10        # overall cap
+    added = 0
+    for num in norm_numbers:
+        if added >= MAX_TOTAL:
+            break
+        per_num = 0
+        for chunk, norm_text in doc_chunks:
+            if chunk.chunk_id in existing_ids:
+                continue
+            if num in norm_text:
+                candidate_chunks.append(chunk)
+                existing_ids.add(chunk.chunk_id)
+                added += 1
+                per_num += 1
+                if per_num >= MAX_PER_NUMBER or added >= MAX_TOTAL:
+                    break
+    return candidate_chunks
+
+
 def _resolve_doc_ids(
     payload: RunQuestionTaskRequest,
     *,
@@ -224,6 +311,17 @@ def run_retrieval_loop(
             current_doc_ids or None,
             current_plan,
         )
+
+        # --- Post-retrieval guarantees (first iteration only) ---
+        if iteration == 1:
+            # Guarantee title/first-page chunks for each requested doc
+            candidate_chunks = _ensure_title_chunks(
+                candidate_chunks, structured_chunks, current_doc_ids,
+            )
+            # Supplementary numeric/date retrieval from option text
+            candidate_chunks = _supplement_numeric_chunks(
+                candidate_chunks, structured_chunks, current_doc_ids, payload.options,
+            )
 
         # 第二轮起：合并累积的已确认证据，让 reasoner 能看到跨轮证据
         if iteration > 1 and ledger["confirmed_chunks"]:

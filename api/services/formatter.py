@@ -3,7 +3,7 @@
 Key improvements over original:
 - Never outputs N/A — always returns a valid option letter
 - Multi-choice: conservative (include insufficients if no supports)
-- Single/judge: highest-priority verdict wins
+- mcq/tf: highest-priority verdict wins
 - Self-check trigger detection for low-confidence cases
 """
 from __future__ import annotations
@@ -23,7 +23,7 @@ def choose_answer(answer_format: str, results: list[ReasoningItem]) -> str:
     For multi-choice: return all supports (sorted); if no supports,
     return all insufficients (conservative); if all refutes, return "A".
 
-    For single/judge: return first support; if no supports, return first
+    For mcq/tf: return first support; if no supports, return first
     insufficient; if all refutes, return "A".
 
     Never returns N/A.
@@ -40,7 +40,7 @@ def choose_answer(answer_format: str, results: list[ReasoningItem]) -> str:
         # All refuted — return least-bad option
         return "A"
 
-    # single / judge
+    # mcq / tf
     if supports:
         return supports[0]
     if insufficients:
@@ -57,7 +57,7 @@ def needs_self_check(
 
     Triggers:
     - All multi-choice questions (prone to over/under-selection)
-    - Single/judge with no supports (low confidence)
+    - mcq/tf with no supports (low confidence)
     """
     if not results:
         return False

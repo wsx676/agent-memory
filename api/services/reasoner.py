@@ -300,7 +300,7 @@ def reason_options(
     options: list[str],
     evidence: list[StructuredChunk],
     question: str = "",
-    answer_format: str = "single",
+    answer_format: str = "mcq",
 ) -> tuple[list[ReasoningItem], dict[str, list[StructuredChunk]]]:
     """Run per-option verification on all options.
 
@@ -313,7 +313,7 @@ def reason_options(
         options: List of option texts (A, B, C, D, ...)
         evidence: List of candidate evidence chunks
         question: The question text (for question-aware matching)
-        answer_format: "single", "multi", or "judge"
+        answer_format: "mcq", "multi", or "tf"
 
     Returns:
         Tuple of (reasoning items, evidence map by option name)

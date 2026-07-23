@@ -85,12 +85,12 @@ def evaluate_retrieval_quality(
         next_action = "numbers_focus"
     # insufficient 触发条件按题型区分：
     # - 多选题：只要有 1 个 insufficient 就 retry（错一个全错，不能放过）
-    # - 判断题（answer_format=="judge" 或选项数<=2）：1 个 insufficient 即 retry
+    # - 判断题（answer_format=="tf" 或选项数<=2）：1 个 insufficient 即 retry
     #   （判断题选项少，任一选项证据不足都值得补检索，不算"过度重试"）
     # - 单选题（选项数>=3）：>=2 个 insufficient 才 retry（避免过度重试简单题）
     insuf_count = verdict_counts.get("insufficient", 0)
-    answer_format = str(plan.get("answer_format", "single"))
-    if answer_format in ("multi", "judge") or len(options) <= 2:
+    answer_format = str(plan.get("answer_format", "mcq"))
+    if answer_format in ("multi", "tf") or len(options) <= 2:
         insuf_threshold = 1
     else:
         insuf_threshold = max(2, len(options) // 2)

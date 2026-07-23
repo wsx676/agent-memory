@@ -50,6 +50,9 @@ debug-*.md
 # Validation / preprocessing outputs (generated)
 validation_outputs/
 
+# Public dataset (raw data, not tracked)
+public_dataset_a/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

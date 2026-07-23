@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import math
+import os
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -75,7 +77,8 @@ STOPWORDS = {
 NUMBER_PATTERN = re.compile(r"\d+(?:\.\d+)?%?|\d+年|\d+月|\d+日")
 CLAUSE_PATTERN = re.compile(r"第[\d一二三四五六七八九十百千万]+条")
 TOKEN_PATTERN = re.compile(r"[\u4e00-\u9fff]+|[A-Za-z0-9.%]+")
-QUERY_SYNONYM_GROUPS = (
+# 硬编码同义词组作为回退（当data/synonym_dict.json加载失败时使用）
+QUERY_SYNONYM_GROUPS_FALLBACK = (
     ("营业收入", "营收"),
     ("归母净利润", "归属于上市公司股东的净利润"),
     ("责任免除", "免责"),
@@ -84,6 +87,30 @@ QUERY_SYNONYM_GROUPS = (
     ("受益所有人", "最终受益人"),
     ("退保费用", "退保手续费"),
 )
+
+
+@lru_cache(maxsize=1)
+def _load_synonym_dict() -> dict[str, list[list[str]]]:
+    """加载领域同义词词典 data/synonym_dict.json，按domain+全局_global合并同义词组。"""
+    dict_path = os.path.join(os.path.dirname(__file__), "..", "..", "data", "synonym_dict.json")
+    try:
+        with open(dict_path, encoding="utf-8") as f:
+            data = json.load(f)
+        return {k: v for k, v in data.items() if k != "_meta"}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _get_synonym_groups(domain: str) -> list[tuple[str, ...]]:
+    """获取domain对应的同义词组（合并_global + 领域特定），词典缺失时回退到硬编码组。"""
+    synonym_dict = _load_synonym_dict()
+    if not synonym_dict:
+        return list(QUERY_SYNONYM_GROUPS_FALLBACK)
+    groups: list[tuple[str, ...]] = []
+    groups.extend(tuple(g) for g in synonym_dict.get("_global", []))
+    if domain and domain != "general":
+        groups.extend(tuple(g) for g in synonym_dict.get(domain, []))
+    return groups
 
 
 @dataclass(frozen=True)
@@ -158,10 +185,10 @@ def _normalize_search_text(text: str) -> str:
     return re.sub(r"\s+", "", text.lower())
 
 
-def _expand_query_tokens(query_text: str, base_tokens: tuple[str, ...]) -> tuple[str, ...]:
+def _expand_query_tokens(query_text: str, base_tokens: tuple[str, ...], domain: str = "general") -> tuple[str, ...]:
     expanded = list(base_tokens)
     lowered = query_text.lower()
-    for group in QUERY_SYNONYM_GROUPS:
+    for group in _get_synonym_groups(domain):
         if any(term.lower() in lowered for term in group):
             for term in group:
                 expanded.extend(tokenize(term))
@@ -203,13 +230,13 @@ def _build_query_context(
     query_text = " ".join([question, query_rewrite, *query_hints, *focused_options]).strip()
     question_tokens = tuple(tokenize(question))
     base_query_tokens = tuple(tokenize(query_text))
-    query_tokens = _expand_query_tokens(query_text, base_query_tokens)
-    option_tokens = tuple(token for option in focused_options for token in tokenize(option))
     domain = _normalize_domain(str((plan or {}).get("domain", "") or ""))
     if domain == "general" and candidate_chunks:
         inferred = Counter(_normalize_domain(chunk.domain) for chunk in candidate_chunks if chunk.domain)
         if inferred:
             domain = inferred.most_common(1)[0][0]
+    query_tokens = _expand_query_tokens(query_text, base_query_tokens, domain)
+    option_tokens = tuple(token for option in focused_options for token in tokenize(option))
     numbers = tuple((plan or {}).get("numbers", ()) or _extract_numbers(query_text))
     clause_refs = tuple((plan or {}).get("clause_refs", ()) or _extract_clause_refs(query_text))
     section_terms = tuple(dict.fromkeys([*_extract_section_terms(query_text), *focus_terms]))

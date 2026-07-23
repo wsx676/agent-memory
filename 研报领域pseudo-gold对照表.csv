@@ -1,0 +1,21 @@
+qid,题型,我的答案,P2v6答案,是否一致,差异说明
+res_a_001,multi/industry_comparison,ABC,BC,✗,P2v6漏选A：pack2_text01 L713-716"韩国银保渠道保费贡献超过50%...2022年的56%"明确匹配A
+res_a_002,multi/market_forecast,ABC,AC,✗,P2v6漏选B：pack2_text01 L713-716"近20年的复合增速达到12%"明确匹配B；D虽数据正确但来自pack2_text17不在doc_ids内
+res_a_003,tf/data_verification,A,B,✗,P2v6误判：韩国银保渠道20年复合增速12%(pack2_text01) < 远望谷新兴赛道RFID增速14.1%(pack2_text19 L32-34)，12%<14.1%→陈述正确→选A
+res_a_004,multi/business_model,ABC,AC,✗,P2v6漏选B：pack2_text09 L444"2030年数据中心半导体加速市场规模将达4930亿美元"明确匹配B；D错在"全球第一"实为"全球第八"
+res_a_005,multi/economic_indicator,BC,C,✗,P2v6漏选B：pack2_text01确认"韩国寿险银保渠道保费贡献超过50%"；A未在pack2_text03找到"服务零售"vs"商品零售"增速对比；D错在剪刀差"由正转负"非"由负转正"
+res_a_006,tf/financial_ratio,A,A,✓,
+res_a_007,multi/tech_standard,ABC,AC,✗,P2v6漏选B：pack2_text17 L384"2025年金融信创市场规模预计接近2500亿元"明确匹配B；D错在天阳科技亏损1139.39万非宇信科技盈利
+res_a_008,mcq/data_accuracy,A,A,✓,
+res_a_009,multi/cross_industry,ABC,BC,✗,P2v6漏选A：pack2_text01确认"韩国寿险银保渠道保费贡献超过50%"；D错在"手动解析"实为"自动解析"
+res_a_010,tf/fund_flow,A,A,✓,
+res_a_011,multi/brokerage_security,ABC,ABC,✓,
+res_a_012,multi/chip_security,ABC,ABC,✓,
+res_a_013,tf/pet_market,B,B,✓,
+res_a_014,multi/consumption_chip,BC,BC,✓,
+res_a_015,mcq/bank_insurance,A,A,✓,
+res_a_016,multi/多选题,CD,CD,✓,
+res_a_017,multi/多选题,AB,B,✗,P2v6漏选A：pack2_text17 L384"2025年金融信创市场规模预计接近2500亿元"明确匹配A；B正确(pack2_text03 L11"高储蓄并存服务消费占比仍处相对低位")；C错(天阳科技亏损)；D"持续放缓"证据不足
+res_a_018,tf/判断题,A,B,✗,P2v6误判：pack2_text04 L462"零售84.8万辆...渗透率51.5%"确认3月乘用车零售渗透率51.5%；L114"26年1月宁德时代市占率回升至25%"确认→两个数据点均正确→选A
+res_a_019,multi/多选题,B,B,✓,
+res_a_020,multi/多选题,AD,AD,✓,

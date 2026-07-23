@@ -18,7 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from api.models import RunQuestionTaskRequest, StructuredChunk
-from api.services.formatter import build_evidence_items, choose_answer, needs_self_check
+from api.services.formatter import build_evidence_items, needs_self_check
 from api.services.qwen_client import answer_with_qwen, get_qwen_config_status, QwenAnswer, verify_with_qwen
 from api.services.retrieval_loop import run_retrieval_loop
 
@@ -27,13 +27,7 @@ PREPROCESSED_DIR = PROJECT_ROOT / "validation_outputs" / "public_dataset_a" / "p
 OUTPUT_DIR = PROJECT_ROOT / "validation_outputs" / "public_dataset_a" / "testing" / "group_a_qwen_eval"
 ANSWER_CSV = OUTPUT_DIR / "answer.csv"
 
-ANSWER_FORMAT_MAPPING = {
-    "single": "single",
-    "mcq": "single",
-    "multi": "multi",
-    "tf": "judge",
-    "judge": "judge",
-}
+VALID_ANSWER_FORMATS = ("mcq", "multi", "tf")
 OPTION_KEYS = ("A", "B", "C", "D", "E", "F")
 
 
@@ -66,8 +60,8 @@ def load_cases() -> list[dict[str, Any]]:
         payload = read_json(file_path)
         for raw_case in payload:
             options = normalize_options(raw_case.get("options"))
-            answer_format = ANSWER_FORMAT_MAPPING.get(str(raw_case.get("answer_format", "")).lower())
-            if not options or not answer_format:
+            answer_format = str(raw_case.get("answer_format", "")).lower()
+            if not options or answer_format not in VALID_ANSWER_FORMATS:
                 continue
             cases.append(
                 {
@@ -112,7 +106,6 @@ def render_report(summary: dict[str, Any]) -> str:
         f"- 样本数：`{summary['case_count']}`",
         "- 真实准确率：`不可计算`",
         f"- 原因：{summary['true_accuracy_note']}",
-        f"- 规则基线一致率：`{proxy_metrics['fallback_consistency_rate']}` ({proxy_metrics['fallback_consistency_count']}/{summary['case_count']})",
         f"- LLM 成功率：`{proxy_metrics['llm_success_rate']}` ({proxy_metrics['llm_success_count']}/{summary['case_count']})",
         "",
         "## Token 统计",
@@ -134,7 +127,7 @@ def render_report(summary: dict[str, Any]) -> str:
     ]
     for domain, aggregate in summary["by_domain"].items():
         lines.append(
-            f"- `{domain}`：cases=`{aggregate['cases']}`，avg_total_tokens=`{aggregate['avg_total_tokens']}`，fallback_consistency_rate=`{aggregate['fallback_consistency_rate']}`，avg_duration_ms=`{aggregate['avg_duration_ms']}`"
+            f"- `{domain}`：cases=`{aggregate['cases']}`，avg_total_tokens=`{aggregate['avg_total_tokens']}`，avg_duration_ms=`{aggregate['avg_duration_ms']}`"
         )
     return "\n".join(lines) + "\n"
 
@@ -180,7 +173,6 @@ def main() -> None:
             available_doc_ids=available_doc_ids,
             structured_chunks=chunks,
         )
-        fallback_answer = choose_answer(request.answer_format, retrieval["reasoning_results"])
         evidence_items = build_evidence_items(retrieval["reasoning_results"], retrieval["evidence_map"])
 
         qwen_error = None
@@ -192,11 +184,13 @@ def main() -> None:
                 answer_format=request.answer_format,
                 evidence=list(retrieval["candidate_chunks"]),
                 reasoning_hints=list(retrieval["reasoning_results"]),
+                force_thinking=True,
+                domain=case["domain"],
             )
         except Exception as exc:  # noqa: BLE001
             qwen_error = f"{type(exc).__name__}: {exc}"
 
-        final_answer = qwen_result.answer if qwen_result is not None else fallback_answer
+        final_answer = qwen_result.answer if qwen_result is not None else "A"
 
         # Self-check for low-confidence answers
         self_checked = False
@@ -213,6 +207,7 @@ def main() -> None:
                     evidence=list(retrieval["candidate_chunks"]),
                     reasoning_hints=list(retrieval["reasoning_results"]),
                     first_answer=final_answer,
+                    domain=case["domain"],
                 )
                 if verified is not None:
                     final_answer = verified.answer
@@ -235,8 +230,6 @@ def main() -> None:
             "scenario_type": case["scenario_type"],
             "file": case["file"],
             "answer": final_answer,
-            "fallback_answer": fallback_answer,
-            "matches_fallback": final_answer == fallback_answer,
             "prompt_tokens": int(qwen_result.prompt_tokens) if qwen_result is not None else 0,
             "completion_tokens": int(qwen_result.completion_tokens) if qwen_result is not None else 0,
             "total_tokens": int(qwen_result.total_tokens) if qwen_result is not None else 0,
@@ -281,7 +274,6 @@ def main() -> None:
 
     token_rows = [row for row in results if row["total_tokens"] > 0]
     durations = [row["duration_ms"] for row in results]
-    consistency_count = sum(1 for row in results if row["matches_fallback"])
 
     by_domain: dict[str, dict[str, Any]] = defaultdict(
         lambda: {
@@ -290,10 +282,8 @@ def main() -> None:
             "prompt_tokens": 0,
             "completion_tokens": 0,
             "total_tokens": 0,
-            "fallback_consistency": 0,
             "avg_duration_ms": 0.0,
             "avg_total_tokens": 0.0,
-            "fallback_consistency_rate": 0.0,
         }
     )
     domain_durations: dict[str, list[float]] = defaultdict(list)
@@ -304,15 +294,11 @@ def main() -> None:
         aggregate["prompt_tokens"] += row["prompt_tokens"]
         aggregate["completion_tokens"] += row["completion_tokens"]
         aggregate["total_tokens"] += row["total_tokens"]
-        aggregate["fallback_consistency"] += 1 if row["matches_fallback"] else 0
         domain_durations[row["domain"]].append(row["duration_ms"])
 
     for domain, aggregate in by_domain.items():
         aggregate["avg_duration_ms"] = round(sum(domain_durations[domain]) / len(domain_durations[domain]), 2)
         aggregate["avg_total_tokens"] = round(aggregate["total_tokens"] / aggregate["cases"], 2) if aggregate["cases"] else 0.0
-        aggregate["fallback_consistency_rate"] = (
-            round(aggregate["fallback_consistency"] / aggregate["cases"], 4) if aggregate["cases"] else 0.0
-        )
 
     summary = {
         "sample": "public_dataset_a/questions/group_a",
@@ -324,8 +310,6 @@ def main() -> None:
         "true_accuracy_available": False,
         "true_accuracy_note": "题库未提供 gold_answer/labels，工作区内未发现可覆盖 100 题的标准答案，因此无法计算真实准确率。",
         "proxy_metrics": {
-            "fallback_consistency_count": consistency_count,
-            "fallback_consistency_rate": round(consistency_count / len(results), 4) if results else 0.0,
             "llm_success_count": len(token_rows),
             "llm_success_rate": round(len(token_rows) / len(results), 4) if results else 0.0,
         },

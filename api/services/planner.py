@@ -50,8 +50,8 @@ def extract_clause_refs(text: str) -> list[str]:
 
 def detect_question_type(request: RunQuestionTaskRequest) -> str:
     merged = f"{request.question} {' '.join(request.options)}"
-    if request.answer_format == "judge":
-        return "judge"
+    if request.answer_format == "tf":
+        return "tf"
     if extract_clause_refs(request.question) or any(hint in merged for hint in CLAUSE_HINTS):
         return "clause_lookup"
     if any(hint in request.question for hint in CALCULATION_HINTS):

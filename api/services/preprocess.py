@@ -87,17 +87,18 @@ def _is_noise_line(line: str) -> bool:
 
 
 def _looks_like_toc(text: str) -> bool:
-    lines = _split_lines(text)
-    if not lines:
-        return False
-    joined = "\n".join(lines[:15])
-    if re.search(r"目录|contents?", joined, re.IGNORECASE):
-        return True
-    toc_line_count = 0
-    for line in lines[:20]:
-        if re.search(r"(\.{2,}|·{2,}|…{2,}).{0,10}\d+$", line) or re.search(r"\b\d+\s*$", line):
-            toc_line_count += 1
-    return toc_line_count >= 5
+    """已废弃：始终返回 False。
+
+    原实现通过"以数字结尾的行"和"含点号引导符的行"检测目录页并整页丢弃，
+    但该启发式在图表密集的研报PDF上产生了严重的误判（pack2_text04 误判率
+    41.5%，pack2_text03 误判率27.8%），直接导致res_a_016和res_a_019两题
+    因关键证据页被误删而做错。
+
+    目录页进入索引的代价极低（BM25自然对短条目去权，LLM可忽略无信息量
+    的目录条目），而误判丢页的代价是灾难性的（关键证据永久丢失）。
+    因此直接禁用此函数，保留函数体仅为向后兼容。
+    """
+    return False
 
 
 def _find_repeated_edge_lines(page_texts: list[str]) -> tuple[set[str], set[str]]:
@@ -148,22 +149,20 @@ def _postprocess_pages(pages: list[PageContent]) -> list[PageContent]:
         cleaned_text = _clean_page_text(page.text, repeated_headers, repeated_footers)
         if not cleaned_text:
             continue
-        is_toc = _looks_like_toc(cleaned_text)
         # 仅对完全相同的页面去重（整页归一化文本做键），避免前缀相同的
         # 合同/条款/报表页被误删。真正的重复页（扫描重复、模板复用）仍会被去除。
+        # 注意：不再使用 _looks_like_toc() 丢弃目录页——该函数在图表密集的
+        # 研报PDF上误判率高达27-41%，导致关键证据页被整页丢失。
         dedupe_key = cleaned_text
         if dedupe_key in seen_full_pages:
             continue
         seen_full_pages.add(dedupe_key)
-        if is_toc:
-            continue
         processed_pages.append(
             PageContent(
                 page_no=page.page_no,
                 text=cleaned_text,
                 section_path=_detect_section_path(cleaned_text, page.page_no),
                 chunk_type=page.chunk_type,
-                is_toc=is_toc,
             )
         )
     return processed_pages

@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 
 TaskMode = Literal["A", "B"]
-AnswerFormat = Literal["single", "multi", "judge"]
+AnswerFormat = Literal["mcq", "multi", "tf"]
 TaskStatus = Literal["queued", "running", "done", "failed"]
 Verdict = Literal["support", "refute", "insufficient"]
 

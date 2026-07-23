@@ -319,7 +319,7 @@ def test_task_run_requires_processed_chunks() -> None:
             "qid": "Q-001",
             "question": "该条款是否提供给付责任？",
             "options": ["提供给付责任", "不提供给付责任", "责任未明确", "属于免责范围"],
-            "answerFormat": "single",
+            "answerFormat": "mcq",
             "docIds": [],
         },
     )
@@ -397,7 +397,7 @@ def test_task_run_records_qwen_fallback_when_disabled(monkeypatch) -> None:
             "qid": "Q-QWEN-DISABLED",
             "question": "该条款是否提供给付责任？",
             "options": ["提供给付责任", "不提供给付责任", "责任未明确", "属于免责范围"],
-            "answerFormat": "single",
+            "answerFormat": "mcq",
             "docIds": ["doc-qwen-disabled"],
         },
     )
@@ -608,7 +608,7 @@ def test_build_plan_exposes_question_type_and_rewrite_catalog() -> None:
         qid="calc-1",
         question="假设现金价值为80万元，累计已领养老年金20万元，身故保险金应如何计算？",
         options=["80万元", "85万元", "90万元", "100万元"],
-        answerFormat="single",
+        answerFormat="mcq",
         docIds=["doc-a", "doc-b"],
     )
 
@@ -690,7 +690,7 @@ def test_retrieval_loop_retries_with_rewrite(monkeypatch) -> None:
         call_count["rank_chunks"] += 1
         return chunks
 
-    def fake_reason_options(options, evidence, question="", answer_format="single"):  # noqa: ANN001
+    def fake_reason_options(options, evidence, question="", answer_format="mcq"):  # noqa: ANN001
         return (
             [
                 ReasoningItem(option="A", verdict="insufficient", reasoning="证据不足"),
@@ -887,7 +887,7 @@ def test_task_run_excludes_done_docs_without_real_chunks(monkeypatch) -> None:
             "qid": "Q-CHAIN-FIX",
             "question": "该条款是否提供给付责任？",
             "options": ["提供给付责任", "不提供给付责任", "责任未明确", "属于免责范围"],
-            "answerFormat": "single",
+            "answerFormat": "mcq",
             "docIds": ["doc-orphan", "doc-ok"],
         },
     )
